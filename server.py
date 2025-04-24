@@ -7,10 +7,10 @@ from uuid import uuid4
 rooms = {}
 connections = {}
 
-def create_room():
+def create_room(user):
     """Create a new room and return the ID"""
-    id = uuid4()
-    rooms[id] = {"messages": [], "users": set()}
+    id = str(uuid4())
+    rooms[id] = {"messages": [], "users": {user}, "admin": user}
 
     return id
 
@@ -20,6 +20,57 @@ def remove_connection(user):
             connections.pop(user, None)
             print(f"[*] {user} left the server")
 
+def room_help_message():
+    print("[*] These are the commands the admin can use:")
+    print(">   !help: display this message")
+    print(">   !clear: clear the room")
+    print(">   !delete: delete the room")
+    print(">   !ban <user>: ban the <user>")
+
+async def handle_room(user, room_id):
+    try:
+        print(f"[*] {user} joined the room {room_id}")
+        while True:
+            message = await connections[user].recv()
+            if message == None:
+                break
+            else:
+                if rooms[room_id]["admin"] == user:
+                    if message.strip() ==  "!help":
+                        room_help_message()
+                    elif message.strip() == "!clear":
+                        pass
+                    elif message.strip() == "!delete":
+                        pass
+                    elif message.strip()[:4] == "!ban":
+                        pass
+                
+                messages.append({user:message})
+                for u in rooms[room_id][users]:
+                    await connections[u].send(f"[{user}] > {message}")
+
+    except ConnectionClosedOK:
+        remove_connection(user)
+
+def get_rooms():
+    res = ""
+    for i, room in enumerate(rooms.keys()):
+        res += f"{i+1}. {room}"
+    
+    return res
+
+async def handle_join_room(user):
+    rooms_str = get_rooms()
+    try:
+        await connections[user].send(rooms_str)
+        id = await connections[user].recv()
+        if id in rooms.keys():
+            await connections[user].send("success")
+            await handle_room(user, id)
+        else:
+            await connections[user].send("[-] No such room...")
+    except ConnectionClosedOK:
+        remove_connection(user)
 
 async def handle_connection(user):
     """Manage users"""
@@ -27,9 +78,17 @@ async def handle_connection(user):
         print(f"[*] {user} joined the server")
         while True:
             message = await connections[user].recv()
-            if message is None:
-                break
-            
+            match message:
+                case None:
+                    break
+                case "create room":
+                    id = create_room(user)
+                    print(f"[*] Created a room with id: {id}")
+                    await connections[user].send(id)
+                
+                case "join room":
+                    await handle_join_room(user)
+
     except ConnectionClosedOK:
         remove_connection(user)
     finally:
@@ -41,6 +100,7 @@ async def register(websocket):
     while True:
         try:
             name = await websocket.recv()
+            name = name.strip()
             if name in connections.keys():
                 await websocket.send("0")
             else:
