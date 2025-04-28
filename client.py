@@ -29,7 +29,8 @@ class ChatRoom:
         visible_messages = self.messages[-self.max_messages:]
         for idx, msg in enumerate(visible_messages):
             self.output_win.addstr(idx + 1, 1, msg[:self.width - 2], curses.color_pair(1))
-        self.output_win.refresh()
+        self.output_win.noutrefresh()
+        
 
     async def get_user_input(self, prompt="> "):
         self.input_win.clear()
