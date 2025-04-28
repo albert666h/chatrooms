@@ -10,7 +10,7 @@ connections = {}
 def create_room(user):
     """Create a new room and return the ID"""
     id = str(uuid4())
-    rooms[id] = {"messages": [], "users": {user}, "admin": user}
+    rooms[id] = {"messages": [], "users": set(), "admin": user}
 
     return id
 
@@ -34,6 +34,14 @@ async def handle_room(user, room_id):
             message = await connections[user].recv()
             if message == None:
                 break
+            elif message.strip() == "!exit":
+                print(f"[*] {user} left the room {room_id}")
+                await connections[user].send(f"!exit")
+                rooms[room_id]["users"].remove(user)
+
+                for u in rooms[room_id]["users"]:
+                    await connections[u].send(f"[{user}] left the chat")
+                return
             else:
                 if rooms[room_id]["admin"] == user:
                     if message.strip() ==  "!help":
@@ -45,9 +53,10 @@ async def handle_room(user, room_id):
                     elif message.strip()[:4] == "!ban":
                         pass
                 
-                messages.append({user:message})
-                for u in rooms[room_id][users]:
-                    await connections[u].send(f"[{user}] > {message}")
+                rooms[room_id]["messages"].append({user:message})
+                for u in rooms[room_id]["users"]:
+                    if connections[u]:
+                        await connections[u].send(f"[{user}] > {message}")
 
     except ConnectionClosedOK:
         remove_connection(user)
@@ -55,7 +64,7 @@ async def handle_room(user, room_id):
 def get_rooms():
     res = ""
     for i, room in enumerate(rooms.keys()):
-        res += f"{i+1}. {room}"
+        res += f"{i+1}. {room}\n"
     
     return res
 
@@ -66,6 +75,7 @@ async def handle_join_room(user):
         id = await connections[user].recv()
         if id in rooms.keys():
             await connections[user].send("success")
+            rooms[id]["users"].add(user)
             await handle_room(user, id)
         else:
             await connections[user].send("[-] No such room...")

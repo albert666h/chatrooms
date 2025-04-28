@@ -1,85 +1,138 @@
-import os
-import websockets
+import curses
 import asyncio
+import websockets
 
 
-def display_options():
-    print("[*] Select your option:")
-    print("1. create room")
-    print("2. join room")
-    print("3. exit")
+class ChatRoom:
+    def __init__(self, stdscr, websocket):
+        self.stdscr = stdscr
+        self.websocket = websocket
 
-async def create_room(websocket):
-    """Send a request to create a room"""
-    await websocket.send("create room")
-    id = await websocket.recv()
-    print(f"[*] Created room with id: {id}")
+        curses.curs_set(1)
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(1, -1, -1)
 
-async def join_room(websocket):
-    """Send a request to join a room"""
-    await websocket.send("join room")
-    rooms = await websocket.recv() # get the list of available rooms
-    print(rooms)
+        self.height, self.width = stdscr.getmaxyx()
+        self.input_height = 3
+        self.output_height = self.height - self.input_height
 
-    id = input("[*] room id: ")
-    await websocket.send(id)
-    res = await websocket.recv()
-    
-    # check if the join is valid
-    if res == "success":
-        print("Success!")
-    else:
-        print(res)
-        return
+        self.output_win = curses.newwin(self.output_height, self.width, 0, 0)
+        self.input_win = curses.newwin(self.input_height, self.width, self.output_height, 0)
 
+        self.messages = []
+        self.max_messages = self.output_height - 2
 
-async def main():
-    print("[*] Welcome to ChatRoom")
-    try:
-        async with websockets.connect("ws://localhost:5678") as websocket:
-            # Registration
+    def draw_output(self):
+        self.output_win.clear()
+        self.output_win.border()
+        visible_messages = self.messages[-self.max_messages:]
+        for idx, msg in enumerate(visible_messages):
+            self.output_win.addstr(idx + 1, 1, msg[:self.width - 2], curses.color_pair(1))
+        self.output_win.refresh()
+
+    async def get_user_input(self, prompt="> "):
+        self.input_win.clear()
+        self.input_win.border()
+        self.input_win.addstr(1, 1, prompt, curses.color_pair(1))
+        curses.echo()
+        self.input_win.refresh()
+        user_input = await asyncio.to_thread(self.input_win.getstr, 1, len(prompt)+1, self.width - len(prompt) - 3)
+        curses.noecho()
+        return user_input.decode("utf-8")
+
+    def add_message(self, msg):
+        self.messages.append(msg)
+        self.draw_output()
+
+    async def authenticate(self):
+        while True:
+            name = await self.get_user_input("username: ")
+            await self.websocket.send(name)
+            res = await self.websocket.recv()
+            if res == "0":
+                self.add_message(f"[-] Username {name} already taken.")
+            elif res == "1":
+                self.add_message(f"[+] Registered as {name}")
+                return
+
+    async def select_room(self):
+        while True:
+            self.add_message("[*] Options:")
+            self.add_message("    1. create room")
+            self.add_message("    2. join room")
+            self.add_message("    3. exit")
+            opt = await self.get_user_input("option: ")
+
+            if opt == "1":
+                await self.websocket.send("create room")
+                room_id = await self.websocket.recv()
+                self.add_message(f"[*] Created room with ID: {room_id}")
+
+            elif opt == "2":
+                await self.websocket.send("join room")
+                rooms = await self.websocket.recv()
+                self.add_message("[*] Available Rooms:")
+                for line in rooms.splitlines():
+                    self.add_message(line)
+                room_id = await self.get_user_input("room id: ")
+                await self.websocket.send(room_id)
+                res = await self.websocket.recv()
+                if res == "success":
+                    await self.run_chat()
+                else:
+                    self.add_message("[-] " + res)
+
+            elif opt == "3":
+                return False
+            else:
+                self.add_message("[-] Invalid option.")
+
+    async def run_chat(self):
+        self.messages = []
+        self.add_message("[*] Joined room. Type !exit to leave.")
+
+        async def receive_messages():
+            try:
+                async for msg in self.websocket:
+                    self.add_message(msg.strip())
+                    if msg == "!exit":
+                        break
+            except websockets.exceptions.ConnectionClosed:
+                self.add_message("[*] Connection closed.")
+
+        async def send_messages():
             while True:
-                name = input("username: ")
-                await websocket.send(name) # send the name to verify
-
-                # check if username is taken
-                res = await websocket.recv()
-                if res == "0":      # username taken
-                    print(f"[-] Username {name} already taken, try another one")
-                elif res == "1":
-                    print(f"[+] Successfully registered as {name}")
+                msg = await self.get_user_input()
+                await self.websocket.send(msg)
+                if msg.strip() == "!exit":
                     break
 
-            while True:
-                display_options()
-                opt = input("[*] option: ")
+        await asyncio.gather(receive_messages(), send_messages())
+        self.messages = []
 
-                match opt:
-                    case '1':
-                        await create_room(websocket)
-                    case '2':
-                        await join_room(websocket)
-                    case '3':
-                        break
-                    case _:
-                        print("[-] Invalid Option. Choose again")               
+    async def run(self):
+        await self.authenticate()
+        joined = await self.select_room()
+        if joined:
+            await self.run_chat()
 
-        print("[*] Bye")
 
-    except websockets.exceptions.ConnectionClosedError as e:
-        print("[*] Connection to the server was closed:")
-        print(e)
-    except websockets.exceptions.InvalidURI as e:
-        print("[*] Invalid WebSocket URI. Please check the URL format.")
-        print(e)    
-    except OSError as e:  # This catches errors like "Connection Refused" when the server is down
-        print("[*] Could not connect to the WebSocket server. Is it running?")
-        print(e)
+async def curses_main(stdscr):
+    try:
+        async with websockets.connect("ws://localhost:5678") as ws:
+            chat_ui = ChatRoom(stdscr, ws)
+            await chat_ui.run()
     except Exception as e:
-        # This will catch any other unexpected errors
-        print("[-] Unexpected error occurred.")
-        print(e)
+        stdscr.clear()
+        stdscr.addstr(0, 0, f"Error: {str(e)}", curses.color_pair(1))
+        stdscr.refresh()
+        await asyncio.sleep(3)
+
+
+def main():
+    curses.wrapper(lambda stdscr: asyncio.run(curses_main(stdscr)))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
